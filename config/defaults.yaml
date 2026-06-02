@@ -1,0 +1,15 @@
+capture:
+  max_session_minutes: 120
+  default_rotation_minutes: 5
+  raw_staging_retention: immediate-delete
+  authorized_pcap_retention_hours: 72
+  authorized_pcap_quota_bytes: 5368709120
+router:
+  poll_minutes: 15
+retention:
+  aggregate_months: 12
+  backup_schedule: weekly
+  backup_copies: 8
+server:
+  bind: 127.0.0.1
+

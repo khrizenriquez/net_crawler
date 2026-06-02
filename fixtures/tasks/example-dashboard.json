@@ -1,0 +1,8 @@
+{
+  "id": "dashboard-status-card",
+  "objective": "Add a dashboard status card using synthetic demo data only.",
+  "allowedPaths": ["dashboard/src", "dashboard/package.json"],
+  "acceptanceCriteria": ["The card displays a coverage label.", "Dashboard tests pass."],
+  "verifyCommands": ["make test-dashboard"]
+}
+

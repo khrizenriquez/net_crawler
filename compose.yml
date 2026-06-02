@@ -1,0 +1,61 @@
+name: duku-net-lab
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-duku_net_lab}
+      POSTGRES_USER: ${POSTGRES_USER:-duku}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-duku} -d ${POSTGRES_DB:-duku_net_lab}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      DUKU_API_HOST: 0.0.0.0
+      DUKU_API_PORT: "8080"
+      DUKU_ALLOW_CONTAINER_BIND: "true"
+      DUKU_HOST_TOKEN: ${DUKU_HOST_TOKEN:?Set DUKU_HOST_TOKEN in .env}
+      DUKU_DEMO_SEED: ${DUKU_DEMO_SEED:-true}
+      DATABASE_URL: postgres://${POSTGRES_USER:-duku}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-duku_net_lab}?sslmode=disable
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    environment:
+      DUKU_STAGING_DIR: /data/staging
+      DUKU_AUTHORIZED_DIR: /data/authorized
+      DUKU_AUTHORIZED_BSSID: ${DUKU_AUTHORIZED_BSSID:-}
+      DUKU_API_URL: http://api:8080/api/v1/ingest
+      DUKU_HOST_TOKEN: ${DUKU_HOST_TOKEN:?Set DUKU_HOST_TOKEN in .env}
+    volumes:
+      - ${DUKU_DATA_DIR:?Set DUKU_DATA_DIR in .env}:/data
+    depends_on:
+      - api
+
+  dashboard:
+    build:
+      context: dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:4173:4173"
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
