@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -84,5 +85,123 @@ func TestValidateRawOutputPathRejectsExistingNestedAndSymlinkedPaths(t *testing.
 	}
 	if err := validateRawOutputPath(symlinked, filepath.Join(symlinked, "new.pcap")); err == nil {
 		t.Fatal("symlinked staging path should fail")
+	}
+}
+
+func TestPartialCapturePathAndAtomicPublish(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("DUKU_DATA_DIR", root)
+	staging := filepath.Join(root, "staging")
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(staging, "capture.pcap")
+	partial := partialCapturePath(final)
+	if partial != final+".partial" {
+		t.Fatalf("partial=%q", partial)
+	}
+	if err := os.WriteFile(partial, []byte("synthetic pcap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishCapture(partial, final); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(partial); !os.IsNotExist(err) {
+		t.Fatalf("partial capture should be removed after publish: %v", err)
+	}
+	data, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "synthetic pcap" {
+		t.Fatalf("published data=%q", data)
+	}
+	if err := publishCapture(partial, final); err != nil {
+		t.Fatalf("publish should be idempotent: %v", err)
+	}
+}
+
+func TestValidateRawOutputPathRejectsExistingPartialCapture(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, "staging")
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(staging, "capture.pcap")
+	if err := os.WriteFile(partialCapturePath(final), []byte("in progress"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRawOutputPath(staging, final); err == nil {
+		t.Fatal("existing partial output path should fail")
+	}
+}
+
+func TestPublishCaptureIsSafeWhenStopAndSupervisorRace(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("DUKU_DATA_DIR", root)
+	staging := filepath.Join(root, "staging")
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(staging, "capture.pcap")
+	partial := partialCapturePath(final)
+	if err := os.WriteFile(partial, []byte("synthetic pcap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errors := make(chan error, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	for range 2 {
+		go func() {
+			ready.Done()
+			<-start
+			errors <- publishCapture(partial, final)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	for range 2 {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestFinishCaptureIsSafeWhenStopAndSupervisorRace(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("DUKU_DATA_DIR", root)
+	staging := filepath.Join(root, "staging")
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(staging, "capture.pcap")
+	current := state{PID: os.Getpid(), RawPath: final, PartialPath: partialCapturePath(final)}
+	if err := os.WriteFile(current.PartialPath, []byte("synthetic pcap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveState(current); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errors := make(chan error, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	for range 2 {
+		go func() {
+			ready.Done()
+			<-start
+			errors <- finishCapture(current)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	for range 2 {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(statePath()); !os.IsNotExist(err) {
+		t.Fatalf("state should be removed after finish: %v", err)
 	}
 }

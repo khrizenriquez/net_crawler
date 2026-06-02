@@ -16,9 +16,9 @@ make schema-check
 | Analyzer | Authorized-BSSID filter construction, raw-PCAP deletion on success and failure, redaction, Base64 omission, parsing and retention quota |
 | Store | Schedule validation, overlap rejection, scheduled commands, lifecycle completion, snapshots, seeded demo, ingest and sorting |
 | API | Local resources, malformed requests, host-token boundary, host-command lifecycle, SSE connect, CORS, ingest and CSV/JSON export |
-| Worker | Environment parsing, BSSID-list normalization and authenticated report upload |
+| Worker | Environment parsing, BSSID-list normalization, partial-PCAP exclusion and authenticated report upload |
 | Huawei adapter | Private HTTP-only validation and explicit unsupported-firmware status |
-| Restricted helper | Interface, channel and path guards, channel parser, private state persistence and process probe |
+| Restricted helper | Interface, channel and path guards, channel parser, private state persistence, process probe and atomic partial-PCAP publication under concurrent finalizers |
 | Harness | Protected paths, manifest validation, prompts, concurrency limit and isolated Git worktrees |
 | Dashboard | Formatting, explicit coverage labels, loopback API calls, POST behavior, exports and SSE construction |
 | SwiftUI core | `.env` token parsing, capture-duration clamping and host-command JSON decoding |

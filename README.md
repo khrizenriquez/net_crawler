@@ -2,7 +2,7 @@
 
 Duku Net Lab is a local-first Wi-Fi observability laboratory for a consented home network. It is designed for macOS Apple Silicon, a Huawei HG8245W5-6T gateway, Podman Compose, and supervised AI-assisted development.
 
-The product records compact metrics and irreversibly redacted findings. It is not a credential collector. Raw channel-wide PCAP files are transient staging artifacts: the worker filters them against confirmed BSSID values and deletes the raw files on every path.
+The product records compact metrics and irreversibly redacted findings. It is not a credential collector. Raw channel-wide PCAP files are transient staging artifacts: the helper writes `.pcap.partial`, atomically publishes `.pcap` only after capture closes, and the worker filters published files against confirmed BSSID values before deleting the raw files on every path.
 
 ## V1 boundaries
 
@@ -169,6 +169,8 @@ stop
 status
 restore
 ```
+
+During capture, the helper writes a private `<name>.pcap.partial` staging file that the worker ignores. On natural completion or safe stop, the helper atomically renames it to `<name>.pcap`; only then may the worker filter and analyze it.
 
 ## Development
 

@@ -16,16 +16,18 @@ import (
 )
 
 const maxDurationMinutes = 120
+const supervisorAction = "__supervise"
 
 var channelRE = regexp.MustCompile(`Channel:\s*([0-9]+)`)
 
 type state struct {
-	PID       int       `json:"pid"`
-	Interface string    `json:"interface"`
-	Channel   int       `json:"channel"`
-	RawPath   string    `json:"rawPath"`
-	StartedAt time.Time `json:"startedAt"`
-	EndsAt    time.Time `json:"endsAt"`
+	PID         int       `json:"pid"`
+	Interface   string    `json:"interface"`
+	Channel     int       `json:"channel"`
+	RawPath     string    `json:"rawPath"`
+	PartialPath string    `json:"partialPath,omitempty"`
+	StartedAt   time.Time `json:"startedAt"`
+	EndsAt      time.Time `json:"endsAt"`
 }
 
 func main() {
@@ -43,6 +45,8 @@ func main() {
 		status()
 	case "restore":
 		restore()
+	case supervisorAction:
+		supervise(os.Args[2:])
 	default:
 		fatal("unsupported action")
 	}
@@ -75,6 +79,9 @@ func must(err error) {
 }
 func isAllowedInterface(value string) bool { return value == "en0" }
 func isAllowedChannel(value int) bool      { return value >= 1 && value <= 233 }
+func partialCapturePath(final string) string {
+	return final + ".partial"
+}
 func inside(base, candidate string) bool {
 	base, _ = filepath.Abs(base)
 	candidate, _ = filepath.Abs(candidate)
@@ -96,9 +103,52 @@ func validateRawOutputPath(staging, raw string) error {
 			return err
 		}
 	}
-	if _, err := os.Lstat(raw); err == nil {
-		return errors.New("output capture path must not already exist")
+	for _, path := range []string{raw, partialCapturePath(raw)} {
+		if _, err := os.Lstat(path); err == nil {
+			return errors.New("output capture path must not already exist")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+func publishCapture(partial, final string) error {
+	partial, _ = filepath.Abs(partial)
+	final, _ = filepath.Abs(final)
+	staging, _ := filepath.Abs(filepath.Join(appDir(), "staging"))
+	if filepath.Dir(final) != staging || filepath.Ext(final) != ".pcap" || partial != partialCapturePath(final) {
+		return errors.New("capture publication paths must be a .pcap and matching .pcap.partial inside staging")
+	}
+	for _, path := range []string{filepath.Dir(staging), staging} {
+		info, err := os.Lstat(path)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlinked data path is not allowed: %s", path)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(final); err == nil {
+		if _, partialErr := os.Lstat(partial); errors.Is(partialErr, os.ErrNotExist) {
+			return nil
+		}
+		return errors.New("refusing to overwrite an existing finalized capture")
 	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	info, err := os.Lstat(partial)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("symlinked partial capture is not allowed")
+	}
+	if err := os.Rename(partial, final); err != nil {
+		if _, finalErr := os.Lstat(final); finalErr == nil {
+			if _, partialErr := os.Lstat(partial); errors.Is(partialErr, os.ErrNotExist) {
+				return nil
+			}
+		}
 		return err
 	}
 	return nil
@@ -122,6 +172,68 @@ func saveState(value state) error {
 func processRunning(pid int) bool {
 	process, err := os.FindProcess(pid)
 	return err == nil && process.Signal(syscall.Signal(0)) == nil
+}
+func waitForProcessExit(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for processRunning(pid) && time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+	}
+	return !processRunning(pid)
+}
+func finishCapture(current state) error {
+	if current.PartialPath != "" {
+		if err := publishCapture(current.PartialPath, current.RawPath); err != nil {
+			return err
+		}
+	}
+	saved, err := readState()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if saved.PID != current.PID {
+		return nil
+	}
+	if err := os.Remove(statePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+func launchSupervisor(pid int, partial, final string) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(executable, supervisorAction, strconv.Itoa(pid), partial, final)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+func supervise(args []string) {
+	if len(args) != 3 || os.Geteuid() != 0 {
+		fatal("internal supervisor is unavailable")
+	}
+	pid, err := strconv.Atoi(args[0])
+	must(err)
+	if pid < 1 {
+		fatal("invalid capture pid")
+	}
+	partial, final := filepath.Clean(args[1]), filepath.Clean(args[2])
+	if partial != partialCapturePath(final) {
+		fatal("invalid capture publication paths")
+	}
+	if !waitForProcessExit(pid, time.Duration(maxDurationMinutes+1)*time.Minute) {
+		process, _ := os.FindProcess(pid)
+		_ = process.Signal(syscall.SIGTERM)
+		if !waitForProcessExit(pid, 5*time.Second) {
+			fatal("capture watchdog could not stop tcpdump")
+		}
+	}
+	must(finishCapture(state{PID: pid, RawPath: final, PartialPath: partial}))
 }
 
 func probe() {
@@ -167,19 +279,32 @@ func start(args []string) {
 	}
 	must(os.MkdirAll(staging, 0o700))
 	must(validateRawOutputPath(staging, raw))
-	capture, err := os.OpenFile(raw, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	partial := partialCapturePath(raw)
+	capture, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	must(err)
 	seconds := strconv.Itoa(duration * 60)
 	cmd := exec.Command("/usr/sbin/tcpdump", "-I", "-i", iface, "-G", seconds, "-W", "1", "-w", "-")
 	cmd.Stdout, cmd.Stderr = capture, os.Stderr
 	if err := cmd.Start(); err != nil {
 		_ = capture.Close()
-		_ = os.Remove(raw)
+		_ = os.Remove(partial)
 		must(err)
 	}
 	_ = capture.Close()
 	now := time.Now()
-	must(saveState(state{PID: cmd.Process.Pid, Interface: iface, Channel: channel, RawPath: raw, StartedAt: now, EndsAt: now.Add(time.Duration(duration) * time.Minute)}))
+	currentState := state{PID: cmd.Process.Pid, Interface: iface, Channel: channel, RawPath: raw, PartialPath: partial, StartedAt: now, EndsAt: now.Add(time.Duration(duration) * time.Minute)}
+	if err := saveState(currentState); err != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = os.Remove(partial)
+		must(err)
+	}
+	if err := launchSupervisor(cmd.Process.Pid, partial, raw); err != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = os.Remove(statePath())
+		_ = os.Remove(partial)
+		must(err)
+	}
+	_ = cmd.Process.Release()
 	fmt.Printf("capture started pid=%d channel=%d\n", cmd.Process.Pid, channel)
 }
 
@@ -209,14 +334,22 @@ func stop() {
 		process, _ := os.FindProcess(current.PID)
 		_ = process.Signal(syscall.SIGTERM)
 	}
-	_ = os.Remove(statePath())
+	if !waitForProcessExit(current.PID, 5*time.Second) {
+		fatal("capture did not stop within five seconds")
+	}
+	must(finishCapture(current))
 	restore()
 	fmt.Println("capture stopped")
 }
 func status() {
 	current, err := readState()
-	if err != nil || !processRunning(current.PID) {
+	if err != nil {
 		_ = os.Remove(statePath())
+		fmt.Println(`{"status":"idle"}`)
+		return
+	}
+	if !processRunning(current.PID) {
+		must(finishCapture(current))
 		fmt.Println(`{"status":"idle"}`)
 		return
 	}

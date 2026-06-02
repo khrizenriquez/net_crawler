@@ -54,3 +54,19 @@ func TestUploadReport(t *testing.T) {
 		})
 	}
 }
+
+func TestIsCompletedCapture(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		want bool
+	}{
+		{name: "capture.pcap", want: true},
+		{name: "capture.pcap.partial", want: false},
+		{name: "capture.partial", want: false},
+		{name: "capture.txt", want: false},
+	} {
+		if got := isCompletedCapture(test.name); got != test.want {
+			t.Fatalf("isCompletedCapture(%q)=%t want %t", test.name, got, test.want)
+		}
+	}
+}

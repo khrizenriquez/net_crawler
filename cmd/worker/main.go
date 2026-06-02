@@ -57,7 +57,7 @@ func process(cfg config) {
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".pcap") {
+		if entry.IsDir() || !isCompletedCapture(entry.Name()) {
 			continue
 		}
 		raw := filepath.Join(cfg.StagingDir, entry.Name())
@@ -77,6 +77,10 @@ func process(cfg config) {
 		}
 		log.Printf("retained authorized capture %s", authorized)
 	}
+}
+
+func isCompletedCapture(name string) bool {
+	return strings.HasSuffix(name, ".pcap")
 }
 
 func uploadReport(cfg config, report analyzer.Report) error {
