@@ -70,3 +70,21 @@ func TestIsCompletedCapture(t *testing.T) {
 		}
 	}
 }
+
+func TestCaptureSourceSeparatesRadioAndLocalHost(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		want captureSource
+		ok   bool
+	}{
+		{name: "capture.pcap", want: sourceAuthorizedRadio, ok: true},
+		{name: "capture.local.pcap", want: sourceLocalHost, ok: true},
+		{name: "capture.local.pcap.partial", ok: false},
+		{name: "capture.txt", ok: false},
+	} {
+		got, ok := classifyCapture(test.name)
+		if got != test.want || ok != test.ok {
+			t.Fatalf("classifyCapture(%q)=(%q, %t) want (%q, %t)", test.name, got, ok, test.want, test.ok)
+		}
+	}
+}

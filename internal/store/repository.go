@@ -15,6 +15,7 @@ type Repository interface {
 	AddRadio(model.AuthorizedRadio) model.AuthorizedRadio
 	AddSchedule(model.CaptureSchedule) (model.CaptureSchedule, error)
 	StartCapture(int) model.HostCommand
+	StartLocalCapture() model.HostCommand
 	StopCapture() model.HostCommand
 	NextHostCommand() (model.HostCommand, error)
 	CompleteHostCommand(string, string) error

@@ -20,10 +20,10 @@ export const api = {
     return { status, captures, metrics, devices, findings, radios, schedules };
   },
   start: (channel: number) => post("/captures/start", { channel }),
+  startLocal: () => post("/captures/start-local"),
   stop: () => post("/captures/stop"),
   seedDemo: () => post("/demo/seed"),
   resetDemo: () => post("/demo/reset"),
   exportURL: (format: "csv" | "json") => `${API}/exports?format=${format}`,
   events: () => new EventSource(`${API}/events`),
 };
-

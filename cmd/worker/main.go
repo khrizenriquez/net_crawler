@@ -12,6 +12,14 @@ import (
 	"time"
 
 	"github.com/duku/net-lab/internal/analyzer"
+	"github.com/duku/net-lab/internal/model"
+)
+
+type captureSource string
+
+const (
+	sourceAuthorizedRadio captureSource = "authorized-radio"
+	sourceLocalHost       captureSource = "local-host"
 )
 
 type config struct {
@@ -57,16 +65,25 @@ func process(cfg config) {
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !isCompletedCapture(entry.Name()) {
+		source, ok := classifyCapture(entry.Name())
+		if entry.IsDir() || !ok {
 			continue
 		}
 		raw := filepath.Join(cfg.StagingDir, entry.Name())
 		authorized := filepath.Join(cfg.AuthorizedDir, strings.TrimSuffix(entry.Name(), ".pcap")+".authorized.pcap")
-		if err := analyzer.FilterAuthorizedPCAP(analyzer.FilterOptions{TSharkPath: env("TSHARK_PATH", "tshark"), RawPath: raw, AuthorizedPath: authorized, AuthorizedBSSID: cfg.AuthorizedBSSID}); err != nil {
-			log.Printf("filter %s: %v", entry.Name(), err)
+		coverage := model.CoverageWiFiObserved
+		var retainErr error
+		if source == sourceLocalHost {
+			coverage = model.CoveragePartial
+			retainErr = analyzer.RetainLocalHostPCAP(raw, authorized)
+		} else {
+			retainErr = analyzer.FilterAuthorizedPCAP(analyzer.FilterOptions{TSharkPath: env("TSHARK_PATH", "tshark"), RawPath: raw, AuthorizedPath: authorized, AuthorizedBSSID: cfg.AuthorizedBSSID})
+		}
+		if retainErr != nil {
+			log.Printf("filter %s: %v", entry.Name(), retainErr)
 			continue
 		}
-		report, err := analyzer.AnalyzePCAP(env("TSHARK_PATH", "tshark"), authorized)
+		report, err := analyzer.AnalyzePCAPWithCoverage(env("TSHARK_PATH", "tshark"), authorized, coverage)
 		if err != nil {
 			log.Printf("analyze %s: %v", authorized, err)
 			continue
@@ -80,7 +97,18 @@ func process(cfg config) {
 }
 
 func isCompletedCapture(name string) bool {
-	return strings.HasSuffix(name, ".pcap")
+	_, ok := classifyCapture(name)
+	return ok
+}
+
+func classifyCapture(name string) (captureSource, bool) {
+	if strings.HasSuffix(name, ".local.pcap") {
+		return sourceLocalHost, true
+	}
+	if strings.HasSuffix(name, ".pcap") {
+		return sourceAuthorizedRadio, true
+	}
+	return "", false
 }
 
 func uploadReport(cfg config, report analyzer.Report) error {

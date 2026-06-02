@@ -83,6 +83,11 @@ func (p *Postgres) StartCapture(channel int) model.HostCommand {
 	_ = p.persist()
 	return value
 }
+func (p *Postgres) StartLocalCapture() model.HostCommand {
+	value := p.memory.StartLocalCapture()
+	_ = p.persist()
+	return value
+}
 func (p *Postgres) StopCapture() model.HostCommand {
 	value := p.memory.StopCapture()
 	_ = p.persist()

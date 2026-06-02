@@ -82,6 +82,73 @@ func TestCompletedHostCommandsUpdateActiveSession(t *testing.T) {
 	}
 }
 
+func TestStopCommandClosesSessionWhenHelperIsAlreadyIdle(t *testing.T) {
+	memory := NewMemory()
+	start := memory.StartLocalCapture()
+	if err := memory.CompleteHostCommand(start.ID, "exit=0 capture started"); err != nil {
+		t.Fatal(err)
+	}
+	stop := memory.StopCapture()
+	if err := memory.CompleteHostCommand(stop.ID, "exit=1 capture is not running"); err != nil {
+		t.Fatal(err)
+	}
+	if active := memory.Status().ActiveSession; active != nil {
+		t.Fatalf("session should be reconciled closed: %+v", active)
+	}
+}
+
+func TestCompletedLocalHostCommandCreatesPartialSession(t *testing.T) {
+	memory := NewMemory()
+	start := memory.StartLocalCapture()
+	if start.Action != "start-local" {
+		t.Fatalf("action=%q", start.Action)
+	}
+	if err := memory.CompleteHostCommand(start.ID, "exit=0 capture started"); err != nil {
+		t.Fatal(err)
+	}
+	active := memory.Status().ActiveSession
+	if active == nil || active.Origin != "local-host" || active.Coverage != model.CoveragePartial {
+		t.Fatalf("unexpected active local-host session: %+v", active)
+	}
+}
+
+func TestStartCaptureReusesPendingStartCommand(t *testing.T) {
+	memory := NewMemory()
+	first := memory.StartLocalCapture()
+	second := memory.StartLocalCapture()
+	if second.ID != first.ID {
+		t.Fatalf("duplicate local start queued: first=%s second=%s", first.ID, second.ID)
+	}
+	third := memory.StartCapture(149)
+	if third.ID != first.ID {
+		t.Fatalf("radio start should reuse pending command: first=%s third=%s", first.ID, third.ID)
+	}
+}
+
+func TestStopCommandCancelsPendingStartsAndTakesPriority(t *testing.T) {
+	memory := NewMemory()
+	start := memory.StartLocalCapture()
+	stop := memory.StopCapture()
+	next, err := memory.NextHostCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID != stop.ID {
+		t.Fatalf("stop should have priority: next=%s stop=%s", next.ID, stop.ID)
+	}
+	if err := memory.CompleteHostCommand(stop.ID, "exit=1 capture is not running"); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range memory.Snapshot().HostCommands {
+		if cmd.ID == start.ID && cmd.Status != "canceled" {
+			t.Fatalf("pending start was not canceled: %+v", cmd)
+		}
+	}
+	if next, err := memory.NextHostCommand(); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unexpected next command after stop: %+v err=%v", next, err)
+	}
+}
+
 func TestCompleteHostCommandIgnoresFailedExecutionAndMissingCommand(t *testing.T) {
 	memory := NewMemory()
 	start := memory.StartCapture(36)

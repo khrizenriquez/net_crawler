@@ -84,6 +84,11 @@ func TestConfigurationCaptureDemoAndReadEndpoints(t *testing.T) {
 		t.Fatalf("stop status=%d", resp.StatusCode)
 	}
 	resp.Body.Close()
+	resp = request(t, http.MethodPost, server.URL+"/api/v1/captures/start-local", "", "")
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("start-local status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
 	resp = request(t, http.MethodPost, server.URL+"/api/v1/demo/seed", "", "")
 	if resp.StatusCode != http.StatusOK || len(memory.Metrics()) == 0 {
 		t.Fatalf("seed status=%d metrics=%d", resp.StatusCode, len(memory.Metrics()))

@@ -88,3 +88,25 @@ func TestFilterAuthorizedPCAPRejectsIdenticalPathsBeforeDeletion(t *testing.T) {
 		t.Fatalf("validation must not delete the input: %v", err)
 	}
 }
+
+func TestRetainLocalHostPCAPMovesRawOutOfStaging(t *testing.T) {
+	dir := t.TempDir()
+	raw := filepath.Join(dir, "raw.local.pcap")
+	retained := filepath.Join(dir, "raw.local.authorized.pcap")
+	if err := os.WriteFile(raw, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RetainLocalHostPCAP(raw, retained); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(raw); !os.IsNotExist(err) {
+		t.Fatalf("raw capture should move out of staging: %v", err)
+	}
+	data, err := os.ReadFile(retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "fixture" {
+		t.Fatalf("unexpected retained content %q", data)
+	}
+}

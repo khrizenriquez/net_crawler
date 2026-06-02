@@ -16,12 +16,16 @@ import (
 )
 
 const maxDurationMinutes = 120
+const localMaxDurationMinutes = 1
+const captureSnapshotBytes = 4096
+const localMaxCaptureBytes = 128 * 1024 * 1024
 const supervisorAction = "__supervise"
 
 var channelRE = regexp.MustCompile(`Channel:\s*([0-9]+)`)
 
 type state struct {
 	PID         int       `json:"pid"`
+	Mode        string    `json:"mode,omitempty"`
 	Interface   string    `json:"interface"`
 	Channel     int       `json:"channel"`
 	RawPath     string    `json:"rawPath"`
@@ -32,13 +36,15 @@ type state struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal("usage: duku-capture-helper probe|start|stop|status|restore")
+		fatal("usage: duku-capture-helper probe|start|start-local|stop|status|restore")
 	}
 	switch os.Args[1] {
 	case "probe":
 		probe()
 	case "start":
-		start(os.Args[2:])
+		startRadio(os.Args[2:])
+	case "start-local":
+		startLocal(os.Args[2:])
 	case "stop":
 		stop()
 	case "status":
@@ -81,6 +87,36 @@ func isAllowedInterface(value string) bool { return value == "en0" }
 func isAllowedChannel(value int) bool      { return value >= 1 && value <= 233 }
 func partialCapturePath(final string) string {
 	return final + ".partial"
+}
+func validateCaptureOutputName(path string, local bool) error {
+	name := filepath.Base(path)
+	if local {
+		if !strings.HasSuffix(name, ".local.pcap") {
+			return errors.New("local-host output path must end with .local.pcap")
+		}
+		return nil
+	}
+	if !strings.HasSuffix(name, ".pcap") || strings.HasSuffix(name, ".local.pcap") {
+		return errors.New("radio output path must end with .pcap and must not use the .local.pcap suffix")
+	}
+	return nil
+}
+func tcpdumpArgs(iface string, seconds int, monitor bool) []string {
+	args := []string{}
+	if monitor {
+		args = append(args, "-I")
+	}
+	return append(args, "-i", iface, "-s", strconv.Itoa(captureSnapshotBytes), "-G", strconv.Itoa(seconds), "-W", "1", "-w", "-")
+}
+func validateCaptureDuration(duration int, monitor bool) error {
+	max := maxDurationMinutes
+	if !monitor {
+		max = localMaxDurationMinutes
+	}
+	if duration < 1 || duration > max {
+		return fmt.Errorf("duration must be between 1 and %d minutes", max)
+	}
+	return nil
 }
 func invokingUserIDs() (int, int, error) {
 	uid, err := strconv.Atoi(os.Getenv("SUDO_UID"))
@@ -161,6 +197,11 @@ func publishCapture(partial, final string) error {
 	}
 	info, err := os.Lstat(partial)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if _, finalErr := os.Lstat(final); finalErr == nil {
+				return nil
+			}
+		}
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
@@ -199,6 +240,30 @@ func processRunning(pid int) bool {
 func waitForProcessExit(pid int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for processRunning(pid) && time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+	}
+	return !processRunning(pid)
+}
+func stopCaptureProcess(pid int) bool {
+	process, _ := os.FindProcess(pid)
+	_ = process.Signal(syscall.SIGTERM)
+	return waitForProcessExit(pid, 5*time.Second)
+}
+func captureByteLimit(final string) int64 {
+	if strings.HasSuffix(filepath.Base(final), ".local.pcap") {
+		return localMaxCaptureBytes
+	}
+	return 0
+}
+func waitForCaptureExit(pid int, partial, final string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	limit := captureByteLimit(final)
+	for processRunning(pid) && time.Now().Before(deadline) {
+		if limit > 0 {
+			if info, err := os.Lstat(partial); err == nil && info.Size() >= limit {
+				return stopCaptureProcess(pid)
+			}
+		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	return !processRunning(pid)
@@ -249,10 +314,8 @@ func supervise(args []string) {
 	if partial != partialCapturePath(final) {
 		fatal("invalid capture publication paths")
 	}
-	if !waitForProcessExit(pid, time.Duration(maxDurationMinutes+1)*time.Minute) {
-		process, _ := os.FindProcess(pid)
-		_ = process.Signal(syscall.SIGTERM)
-		if !waitForProcessExit(pid, 5*time.Second) {
+	if !waitForCaptureExit(pid, partial, final, time.Duration(maxDurationMinutes+1)*time.Minute) {
+		if !stopCaptureProcess(pid) {
 			fatal("capture watchdog could not stop tcpdump")
 		}
 	}
@@ -271,7 +334,7 @@ func probe() {
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(response)
 }
-func start(args []string) {
+func startRadio(args []string) {
 	if len(args) != 4 {
 		fatal("usage: start <interface> <channel> <duration-minutes> <raw-output-path>")
 	}
@@ -291,10 +354,27 @@ func start(args []string) {
 	}
 	duration, err := strconv.Atoi(args[2])
 	must(err)
-	if duration < 1 || duration > maxDurationMinutes {
-		fatal("duration must be between 1 and 120 minutes")
-	}
 	raw := filepath.Clean(args[3])
+	must(validateCaptureOutputName(raw, false))
+	startCapture(iface, channel, duration, raw, true)
+}
+func startLocal(args []string) {
+	if len(args) != 3 {
+		fatal("usage: start-local <interface> <duration-minutes> <raw-output-path>")
+	}
+	iface := args[0]
+	if !isAllowedInterface(iface) {
+		fatal("only en0 is allowed in v1")
+	}
+	duration, err := strconv.Atoi(args[1])
+	must(err)
+	raw := filepath.Clean(args[2])
+	must(validateCaptureOutputName(raw, true))
+	channel, _ := currentChannel()
+	startCapture(iface, channel, duration, raw, false)
+}
+func startCapture(iface string, channel, duration int, raw string, monitor bool) {
+	must(validateCaptureDuration(duration, monitor))
 	staging := filepath.Join(appDir(), "staging")
 	must(validateRawOutputPath(staging, raw))
 	if current, err := readState(); err == nil && processRunning(current.PID) {
@@ -312,8 +392,7 @@ func start(args []string) {
 		_ = os.Remove(partial)
 		must(err)
 	}
-	seconds := strconv.Itoa(duration * 60)
-	cmd := exec.Command("/usr/sbin/tcpdump", "-I", "-i", iface, "-G", seconds, "-W", "1", "-w", "-")
+	cmd := exec.Command("/usr/sbin/tcpdump", tcpdumpArgs(iface, duration*60, monitor)...)
 	cmd.Stdout, cmd.Stderr = capture, os.Stderr
 	if err := cmd.Start(); err != nil {
 		_ = capture.Close()
@@ -323,7 +402,11 @@ func start(args []string) {
 	_ = capture.Close()
 	tcpdumpPID := cmd.Process.Pid
 	now := time.Now()
-	currentState := state{PID: tcpdumpPID, Interface: iface, Channel: channel, RawPath: raw, PartialPath: partial, StartedAt: now, EndsAt: now.Add(time.Duration(duration) * time.Minute)}
+	mode := "local-host"
+	if monitor {
+		mode = "authorized-radio"
+	}
+	currentState := state{PID: tcpdumpPID, Mode: mode, Interface: iface, Channel: channel, RawPath: raw, PartialPath: partial, StartedAt: now, EndsAt: now.Add(time.Duration(duration) * time.Minute)}
 	if err := saveState(currentState); err != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		_ = os.Remove(partial)

@@ -19,7 +19,20 @@ type Report struct {
 	Findings []model.Finding      `json:"findings"`
 }
 
+type metricKey struct {
+	Timestamp time.Time
+	Source    model.Coverage
+	DeviceMAC string
+	RemoteIP  string
+	Domain    string
+	Protocol  string
+}
+
 func AnalyzePCAP(tsharkPath, path string) (Report, error) {
+	return AnalyzePCAPWithCoverage(tsharkPath, path, model.CoverageWiFiObserved)
+}
+
+func AnalyzePCAPWithCoverage(tsharkPath, path string, coverage model.Coverage) (Report, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	args := []string{"-r", path, "-T", "fields", "-E", "separator=\t", "-E", "occurrence=f",
@@ -33,14 +46,19 @@ func AnalyzePCAP(tsharkPath, path string) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("tshark analyze failed: %w", err)
 	}
-	return ParseTSharkRows(strings.NewReader(string(output)))
+	return ParseTSharkRowsWithCoverage(strings.NewReader(string(output)), coverage)
 }
 
 func ParseTSharkRows(input io.Reader) (Report, error) {
+	return ParseTSharkRowsWithCoverage(input, model.CoverageWiFiObserved)
+}
+
+func ParseTSharkRowsWithCoverage(input io.Reader, coverage model.Coverage) (Report, error) {
 	reader := csv.NewReader(bufio.NewReader(input))
 	reader.Comma = '\t'
 	reader.FieldsPerRecord = -1
 	var report Report
+	metricIndexes := make(map[metricKey]int)
 	for {
 		row, err := reader.Read()
 		if err == io.EOF {
@@ -56,7 +74,14 @@ func ParseTSharkRows(input io.Reader) (Report, error) {
 		size, _ := strconv.ParseInt(row[1], 10, 64)
 		domain := firstNonEmpty(row[6], row[5])
 		protocol := strings.ToUpper(firstNonEmpty(row[4], "UNKNOWN"))
-		report.Metrics = append(report.Metrics, model.MetricBucket{Timestamp: timestamp, Source: model.CoverageWiFiObserved, DeviceMAC: row[2], RemoteIP: row[3], Domain: domain, Protocol: protocol, BytesUp: size, PacketsUp: 1})
+		key := metricKey{Timestamp: timestamp.Truncate(time.Minute), Source: coverage, DeviceMAC: row[2], RemoteIP: row[3], Domain: domain, Protocol: protocol}
+		if index, ok := metricIndexes[key]; ok {
+			report.Metrics[index].BytesUp += size
+			report.Metrics[index].PacketsUp++
+		} else {
+			metricIndexes[key] = len(report.Metrics)
+			report.Metrics = append(report.Metrics, model.MetricBucket{Timestamp: key.Timestamp, Source: coverage, DeviceMAC: key.DeviceMAC, RemoteIP: key.RemoteIP, Domain: key.Domain, Protocol: key.Protocol, BytesUp: size, PacketsUp: 1})
+		}
 		sample := strings.TrimSpace(strings.Join(row[7:], " "))
 		if sample == "" {
 			continue

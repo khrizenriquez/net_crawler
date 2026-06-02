@@ -203,9 +203,32 @@ func (m *Memory) AddSchedule(s model.CaptureSchedule) (model.CaptureSchedule, er
 func (m *Memory) StartCapture(channel int) model.HostCommand {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if cmd, ok := m.pendingStartCommand(); ok {
+		return cmd
+	}
 	cmd := m.startCapture(channel, 120, []int{channel}, 5)
 	m.hostCommands = append(m.hostCommands, cmd)
 	return cmd
+}
+
+func (m *Memory) StartLocalCapture() model.HostCommand {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cmd, ok := m.pendingStartCommand(); ok {
+		return cmd
+	}
+	cmd := model.HostCommand{ID: m.id("host"), Action: "start-local", Args: map[string]any{"durationMinutes": 1}, Status: "pending", CreatedAt: time.Now()}
+	m.hostCommands = append(m.hostCommands, cmd)
+	return cmd
+}
+
+func (m *Memory) pendingStartCommand() (model.HostCommand, bool) {
+	for _, cmd := range m.hostCommands {
+		if cmd.Status == "pending" && (cmd.Action == "start" || cmd.Action == "start-local") {
+			return cmd, true
+		}
+	}
+	return model.HostCommand{}, false
 }
 
 func (m *Memory) startCapture(channel, duration int, channels []int, rotation int) model.HostCommand {
@@ -259,6 +282,7 @@ func argInt(value any) int {
 func (m *Memory) StopCapture() model.HostCommand {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.cancelPendingStarts("canceled by stop")
 	cmd := model.HostCommand{ID: m.id("host"), Action: "stop", Args: map[string]any{}, Status: "pending", CreatedAt: time.Now()}
 	m.hostCommands = append(m.hostCommands, cmd)
 	return cmd
@@ -267,6 +291,11 @@ func (m *Memory) StopCapture() model.HostCommand {
 func (m *Memory) NextHostCommand() (model.HostCommand, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	for _, cmd := range m.hostCommands {
+		if cmd.Status == "pending" && cmd.Action == "stop" {
+			return cmd, nil
+		}
+	}
 	for _, cmd := range m.hostCommands {
 		if cmd.Status == "pending" {
 			return cmd, nil
@@ -281,23 +310,37 @@ func (m *Memory) CompleteHostCommand(id, result string) error {
 	for i := range m.hostCommands {
 		if m.hostCommands[i].ID == id {
 			m.hostCommands[i].Status, m.hostCommands[i].Result = "completed", result
+			if m.hostCommands[i].Action == "stop" {
+				m.cancelPendingStarts("canceled by completed stop")
+				for j := range m.sessions {
+					if m.sessions[j].Status == "running" {
+						m.sessions[j].Status, m.sessions[j].EndedAt = "completed", time.Now()
+					}
+				}
+				return nil
+			}
 			if strings.HasPrefix(result, "exit=0") {
 				switch m.hostCommands[i].Action {
 				case "start":
 					channel := argInt(m.hostCommands[i].Args["channel"])
 					m.sessions = append(m.sessions, model.CaptureSession{ID: m.id("capture"), Origin: "manual", Status: "running", Channel: channel, Coverage: model.CoverageWiFiObserved, StartedAt: time.Now()})
-				case "stop":
-					for j := range m.sessions {
-						if m.sessions[j].Status == "running" {
-							m.sessions[j].Status, m.sessions[j].EndedAt = "completed", time.Now()
-						}
-					}
+				case "start-local":
+					m.sessions = append(m.sessions, model.CaptureSession{ID: m.id("capture"), Origin: "local-host", Status: "running", Band: "associated en0", Coverage: model.CoveragePartial, StartedAt: time.Now()})
 				}
 			}
 			return nil
 		}
 	}
 	return ErrNotFound
+}
+
+func (m *Memory) cancelPendingStarts(reason string) {
+	for i := range m.hostCommands {
+		if m.hostCommands[i].Status == "pending" && (m.hostCommands[i].Action == "start" || m.hostCommands[i].Action == "start-local") {
+			m.hostCommands[i].Status = "canceled"
+			m.hostCommands[i].Result = reason
+		}
+	}
 }
 
 func (m *Memory) ResetDemo() {

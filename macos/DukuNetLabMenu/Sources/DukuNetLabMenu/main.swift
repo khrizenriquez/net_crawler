@@ -29,20 +29,28 @@ final class LabModel: ObservableObject {
     @Published var status: APIStatus?
     @Published var message = "Laboratorio detenido"
     @Published var isBusy = false
-    private var timer: Timer?
+    private var pollTask: Task<Void, Never>?
     private let apiURL = URL(string: "http://127.0.0.1:8080/api/v1/status")!
     private let dashboardURL = URL(string: "http://127.0.0.1:4173")!
+    private let detectedRepositoryPath = defaultRepositoryPath(currentDirectory: FileManager.default.currentDirectoryPath, bundlePath: Bundle.main.bundleURL.path)
 
     init() {
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh(); await self?.pollHostCommand() }
+        pollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                await self?.refresh()
+                await self?.pollHostCommand()
+                try? await Task.sleep(for: .seconds(5))
+            }
         }
-        Task { await refresh() }
+    }
+
+    deinit {
+        pollTask?.cancel()
     }
 
     var repositoryPath: String {
         UserDefaults.standard.string(forKey: "repositoryPath")
-            ?? FileManager.default.currentDirectoryPath
+            ?? detectedRepositoryPath
     }
 
     func refresh() async {
@@ -57,16 +65,30 @@ final class LabModel: ObservableObject {
     }
 
     func pollHostCommand() async {
-        guard status != nil, let token = hostToken else { return }
+        guard status != nil else {
+            logBridge("skip poll: status unavailable")
+            return
+        }
+        guard let token = hostToken else {
+            logBridge("skip poll: host token unavailable at \(repositoryPath)")
+            return
+        }
         var request = URLRequest(url: URL(string: "http://127.0.0.1:8080/api/v1/host/commands/next")!)
         request.setValue(token, forHTTPHeaderField: "X-Duku-Host-Token")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard statusCode == 200 else {
+                logBridge("poll status=\(statusCode)")
+                return
+            }
             let command = try JSONDecoder().decode(HostCommand.self, from: data)
             let result = execute(command)
+            logBridge("executed \(command.action): \(result.prefix(80))")
             await report(command.id, result: result, token: token)
-        } catch {}
+        } catch {
+            logBridge("poll error: \(error.localizedDescription)")
+        }
     }
 
     func start() {
@@ -117,6 +139,12 @@ final class LabModel: ObservableObject {
             let name = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
             let path = "\(FileManager.default.homeDirectoryForCurrentUser.path)/.duku-net-lab/staging/\(name).pcap"
             arguments = ["-n", helper, "start", "en0", String(channel), String(duration), path]
+        case "start-local":
+            let duration = clampedCaptureDuration(command.args["durationMinutes"]?.intValue)
+            let formatter = ISO8601DateFormatter()
+            let name = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let path = "\(FileManager.default.homeDirectoryForCurrentUser.path)/.duku-net-lab/staging/\(name).local.pcap"
+            arguments = localCaptureArguments(helper: helper, duration: duration, path: path)
         case "stop": arguments = ["-n", helper, "stop"]
         default: return "unsupported host action"
         }
@@ -142,6 +170,21 @@ final class LabModel: ObservableObject {
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["result": result])
         _ = try? await URLSession.shared.data(for: request)
         await refresh()
+    }
+
+    private func logBridge(_ message: String) {
+        let line = "\(Date()) \(message)\n"
+        let url = URL(fileURLWithPath: "/tmp/duku-net-lab-menu.log")
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+                try? handle.close()
+            } else {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
     }
 
     private func runPodman(_ args: [String], completion: @escaping @MainActor @Sendable (Int32) -> Void) {

@@ -15,17 +15,24 @@ if ! git check-ignore -q .env; then
 fi
 
 matches="$(git ls-files --cached --others --exclude-standard | while IFS= read -r file; do
-  if [ "$file" = "scripts/check-repository-safety.sh" ]; then
-    continue
-  fi
-  grep -nEi \
-    '(BEGIN [A-Z ]*PRIVATE KEY|b8:5f:b0:5c:1f:23|b8:5f:b0:5c:1f:24|34:7f:da:80:1a:20|a4:cf:12:4e:90:01|8c:85:90:71:3e:44|4857544301FEDAA9|HWTC01FEDAA9|2150085157EGN2004973)' \
-    "$file" 2>/dev/null || true
+  grep -nEi '(BEGIN [A-Z ]*PRIVATE KEY)' "$file" 2>/dev/null || true
 done)"
 if [ -n "$matches" ]; then
   printf '%s\n' "$matches" >&2
-  echo "Sensitive router identifiers or private keys detected in publishable files" >&2
+  echo "Private keys detected in publishable files" >&2
   exit 1
+fi
+
+local_pattern_file="${DUKU_SAFETY_PATTERN_FILE:-.duku-sensitive-patterns}"
+if [ -f "$local_pattern_file" ]; then
+  local_matches="$(git ls-files --cached --others --exclude-standard | while IFS= read -r file; do
+    grep -nEif "$local_pattern_file" "$file" 2>/dev/null || true
+  done)"
+  if [ -n "$local_matches" ]; then
+    printf '%s\n' "$local_matches" >&2
+    echo "Local sensitive identifiers detected in publishable files" >&2
+    exit 1
+  fi
 fi
 
 if grep -Eq '(duku-local-only|change-this-local-token)' compose.yml; then

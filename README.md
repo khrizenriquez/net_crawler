@@ -2,12 +2,13 @@
 
 Duku Net Lab is a local-first Wi-Fi observability laboratory for a consented home network. It is designed for macOS Apple Silicon, a Huawei HG8245W5-6T gateway, Podman Compose, and supervised AI-assisted development.
 
-The product records compact metrics and irreversibly redacted findings. It is not a credential collector. Raw channel-wide PCAP files are transient staging artifacts: the helper writes `.pcap.partial`, atomically publishes `.pcap` only after capture closes, and the worker filters published files against confirmed BSSID values before deleting the raw files on every path.
+The product records compact metrics and irreversibly redacted findings. It is not a credential collector. Metrics are aggregated per minute, coverage, device MAC, remote IP, domain and protocol. Raw channel-wide PCAP files are transient staging artifacts: the helper writes `.pcap.partial`, atomically publishes `.pcap` only after capture closes, and the worker filters published files against confirmed BSSID values before deleting the raw files on every path.
 
 ## V1 boundaries
 
 - One Mac Wi-Fi interface observes one selected channel at a time.
 - On macOS `26.4.1`, Apple's built-in tools no longer expose channel switching. The v1 helper captures only when the requested channel matches the current Wi-Fi channel. Configured multi-channel rotation remains capability-blocked until a compatible adapter backend is added.
+- The integrated Mac radio may expose zero frames in monitor mode. The explicit `local-host` fallback captures real associated traffic for this Mac only in one-minute, 128 MiB capped segments and labels its metrics `partial`; it does not observe phones, TVs or other clients.
 - Ethernet clients are out of scope for individual inspection.
 - WPA2 Personal decryption is optional, passive, and possible only when the relevant handshake was observed.
 - HTTPS payloads remain opaque.
@@ -21,10 +22,10 @@ These are capability boundaries, not dashboard caveats. See [ADR-0008](docs/adr/
 | Component | Runtime | Responsibility |
 | --- | --- | --- |
 | `duku-api` | Go container | REST, SSE, validation, demo data and host-command queue |
-| `duku-worker` | Go + local `tshark` container | Authorized-BSSID filtering and analysis boundary |
+| `duku-worker` | Go + local `tshark` container | Authorized-BSSID filtering, explicit local-host handling and analysis boundary |
 | PostgreSQL | Podman volume | Durable operational schema for production persistence |
 | Dashboard | React container | Spanish localhost-only operational UI |
-| `duku-capture-helper` | Restricted root-owned host binary | `probe`, `start`, `stop`, `status`, `restore` only |
+| `duku-capture-helper` | Restricted root-owned host binary | `probe`, `start`, `start-local`, `stop`, `status`, `restore` only |
 | Duku Net Lab menu app | SwiftUI macOS app | Start/stop Podman, open dashboard and show local state |
 | Harness | Go CLI | Prepare supervised Codex tasks in isolated Git worktrees |
 
@@ -150,7 +151,7 @@ make helper-install
 sudo /usr/local/libexec/duku-capture-helper probe
 ```
 
-On current macOS versions, `probe` reports degraded channel control. Start short manual captures only when the requested channel matches the Mac's current Wi-Fi channel.
+On current macOS versions, `probe` reports degraded channel control. Start short radio captures only when the requested channel matches the Mac's current Wi-Fi channel. Use the dashboard's `Capturar tráfico local` fallback to collect real traffic from this Mac when the integrated radio does not expose monitor-mode frames.
 
 ### 3. Use manual capture first
 
@@ -165,12 +166,13 @@ The helper accepts only:
 ```text
 probe
 start <en0> <channel> <1..120 minutes> <staging .pcap path>
+start-local <en0> <1 minute> <staging .local.pcap path>
 stop
 status
 restore
 ```
 
-During capture, the helper writes a private `<name>.pcap.partial` staging file that the worker ignores. The file remains mode `600` and is owned by the local user who invoked the restricted helper so the Podman-mounted worker can read it. On natural completion or safe stop, the helper atomically renames it to `<name>.pcap`; only then may the worker filter and analyze it.
+During capture, the helper writes a private `.pcap.partial` staging file that the worker ignores. The file remains mode `600` and is owned by the local user who invoked the restricted helper so the Podman-mounted worker can read it. Packets are truncated to `4096` bytes to bound payload retention. Associated `local-host` captures are additionally capped at 128 MiB per segment. On natural completion, quota stop or safe stop, the helper atomically publishes the `.pcap`. Radio captures are filtered by authorized BSSID before analysis. Associated `local-host` captures are retained separately and analyzed with `partial` coverage.
 
 ## Development
 

@@ -31,6 +31,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/events", s.events)
 	mux.HandleFunc("GET /api/v1/captures", s.listCaptures)
 	mux.HandleFunc("POST /api/v1/captures/start", s.startCapture)
+	mux.HandleFunc("POST /api/v1/captures/start-local", s.startLocalCapture)
 	mux.HandleFunc("POST /api/v1/captures/stop", s.stopCapture)
 	mux.HandleFunc("GET /api/v1/radios", s.listRadios)
 	mux.HandleFunc("POST /api/v1/radios", s.addRadio)
@@ -158,6 +159,11 @@ func (s *Server) startCapture(w http.ResponseWriter, r *http.Request) {
 	cmd := s.store.StartCapture(body.Channel)
 	writeJSON(w, http.StatusAccepted, cmd)
 	s.publish("capture.requested")
+}
+func (s *Server) startLocalCapture(w http.ResponseWriter, _ *http.Request) {
+	cmd := s.store.StartLocalCapture()
+	writeJSON(w, http.StatusAccepted, cmd)
+	s.publish("capture.local_requested")
 }
 func (s *Server) stopCapture(w http.ResponseWriter, _ *http.Request) {
 	cmd := s.store.StopCapture()

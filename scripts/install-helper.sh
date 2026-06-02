@@ -9,9 +9,8 @@ USER_NAME="${SUDO_USER:?run through sudo}"
 install -d -m 755 /usr/local/libexec
 install -m 755 "$SOURCE" "$TARGET"
 cat > "$SUDOERS" <<EOF
-$USER_NAME ALL=(root) NOPASSWD: $TARGET probe, $TARGET start *, $TARGET stop, $TARGET status, $TARGET restore
+$USER_NAME ALL=(root) NOPASSWD: $TARGET probe, $TARGET start *, $TARGET start-local *, $TARGET stop, $TARGET status, $TARGET restore
 EOF
 chmod 440 "$SUDOERS"
 visudo -cf "$SUDOERS"
 echo "Installed $TARGET and validated $SUDOERS"
-

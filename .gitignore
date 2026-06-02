@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.duku-sensitive-patterns
 .superpowers/
 .duku-data/
 .duku-net-lab/

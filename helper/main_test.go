@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -251,5 +252,55 @@ func TestSetPrivateCaptureOwnerKeepsMode600(t *testing.T) {
 func TestCaptureStartedMessageUsesSavedPID(t *testing.T) {
 	if got := captureStartedMessage(1234, 149); got != "capture started pid=1234 channel=149" {
 		t.Fatalf("message=%q", got)
+	}
+}
+
+func TestValidateCaptureOutputNameSeparatesRadioAndLocalHost(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		local bool
+		valid bool
+	}{
+		{name: "capture.pcap", valid: true},
+		{name: "capture.local.pcap", local: true, valid: true},
+		{name: "capture.local.pcap", valid: false},
+		{name: "capture.pcap", local: true, valid: false},
+		{name: "capture.local.txt", local: true, valid: false},
+	} {
+		if err := validateCaptureOutputName(test.name, test.local); (err == nil) != test.valid {
+			t.Fatalf("validateCaptureOutputName(%q, %t) err=%v valid=%t", test.name, test.local, err, test.valid)
+		}
+	}
+}
+
+func TestTCPDumpArgsSeparateMonitorAndLocalHostModes(t *testing.T) {
+	monitor := tcpdumpArgs("en0", 60, true)
+	local := tcpdumpArgs("en0", 60, false)
+	if strings.Join(monitor, " ") != "-I -i en0 -s 4096 -G 60 -W 1 -w -" {
+		t.Fatalf("monitor args=%v", monitor)
+	}
+	if strings.Join(local, " ") != "-i en0 -s 4096 -G 60 -W 1 -w -" {
+		t.Fatalf("local args=%v", local)
+	}
+}
+
+func TestCaptureDurationLimits(t *testing.T) {
+	if err := validateCaptureDuration(maxDurationMinutes, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCaptureDuration(localMaxDurationMinutes, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCaptureDuration(localMaxDurationMinutes+1, false); err == nil {
+		t.Fatal("local-host capture exceeded its segment limit")
+	}
+}
+
+func TestCaptureByteLimitAppliesOnlyToLocalHost(t *testing.T) {
+	if got := captureByteLimit("capture.local.pcap"); got != localMaxCaptureBytes {
+		t.Fatalf("local limit=%d", got)
+	}
+	if got := captureByteLimit("capture.pcap"); got != 0 {
+		t.Fatalf("radio limit=%d", got)
 	}
 }

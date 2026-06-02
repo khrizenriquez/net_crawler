@@ -27,6 +27,11 @@ describe("api", () => {
       "http://127.0.0.1:8080/api/v1/captures/start",
       expect.objectContaining({ method: "POST", body: '{"channel":36}' }),
     );
+    await api.startLocal();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8080/api/v1/captures/start-local",
+      expect.objectContaining({ method: "POST" }),
+    );
     expect(api.exportURL("csv")).toBe("http://127.0.0.1:8080/api/v1/exports?format=csv");
   });
 

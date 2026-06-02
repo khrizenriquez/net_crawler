@@ -61,3 +61,20 @@ func FilterAuthorizedPCAP(opts FilterOptions) error {
 	}
 	return nil
 }
+
+func RetainLocalHostPCAP(rawPath, retainedPath string) error {
+	rawPath, retainedPath = filepath.Clean(rawPath), filepath.Clean(retainedPath)
+	if rawPath == retainedPath {
+		return errors.New("raw and retained paths must differ")
+	}
+	if !strings.HasSuffix(rawPath, ".local.pcap") || !strings.HasSuffix(retainedPath, ".local.authorized.pcap") {
+		return errors.New("local-host paths must use .local.pcap and .local.authorized.pcap suffixes")
+	}
+	defer os.Remove(rawPath)
+	if _, err := os.Lstat(retainedPath); err == nil {
+		return errors.New("retained local-host capture already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(rawPath, retainedPath)
+}
