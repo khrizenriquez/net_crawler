@@ -3,7 +3,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -203,5 +205,51 @@ func TestFinishCaptureIsSafeWhenStopAndSupervisorRace(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath()); !os.IsNotExist(err) {
 		t.Fatalf("state should be removed after finish: %v", err)
+	}
+}
+
+func TestInvokingUserIDs(t *testing.T) {
+	t.Setenv("SUDO_UID", strconv.Itoa(os.Getuid()))
+	t.Setenv("SUDO_GID", strconv.Itoa(os.Getgid()))
+	uid, gid, err := invokingUserIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uid != os.Getuid() || gid != os.Getgid() {
+		t.Fatalf("uid=%d gid=%d", uid, gid)
+	}
+	t.Setenv("SUDO_UID", "invalid")
+	if _, _, err := invokingUserIDs(); err == nil {
+		t.Fatal("invalid sudo uid should fail")
+	}
+}
+
+func TestSetPrivateCaptureOwnerKeepsMode600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "capture.pcap.partial")
+	if err := os.WriteFile(path, []byte("synthetic pcap"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := setPrivateCaptureOwner(path, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode=%o", info.Mode().Perm())
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("missing unix file metadata")
+	}
+	if int(stat.Uid) != os.Getuid() || int(stat.Gid) != os.Getgid() {
+		t.Fatalf("uid=%d gid=%d", stat.Uid, stat.Gid)
+	}
+}
+
+func TestCaptureStartedMessageUsesSavedPID(t *testing.T) {
+	if got := captureStartedMessage(1234, 149); got != "capture started pid=1234 channel=149" {
+		t.Fatalf("message=%q", got)
 	}
 }

@@ -170,7 +170,7 @@ status
 restore
 ```
 
-During capture, the helper writes a private `<name>.pcap.partial` staging file that the worker ignores. On natural completion or safe stop, the helper atomically renames it to `<name>.pcap`; only then may the worker filter and analyze it.
+During capture, the helper writes a private `<name>.pcap.partial` staging file that the worker ignores. The file remains mode `600` and is owned by the local user who invoked the restricted helper so the Podman-mounted worker can read it. On natural completion or safe stop, the helper atomically renames it to `<name>.pcap`; only then may the worker filter and analyze it.
 
 ## Development
 

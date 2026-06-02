@@ -82,6 +82,29 @@ func isAllowedChannel(value int) bool      { return value >= 1 && value <= 233 }
 func partialCapturePath(final string) string {
 	return final + ".partial"
 }
+func invokingUserIDs() (int, int, error) {
+	uid, err := strconv.Atoi(os.Getenv("SUDO_UID"))
+	if err != nil || uid < 0 {
+		return 0, 0, errors.New("valid SUDO_UID is required")
+	}
+	gid, err := strconv.Atoi(os.Getenv("SUDO_GID"))
+	if err != nil || gid < 0 {
+		return 0, 0, errors.New("valid SUDO_GID is required")
+	}
+	return uid, gid, nil
+}
+func setPrivateCaptureOwner(path string, uid, gid int) error {
+	if uid < 0 || gid < 0 {
+		return errors.New("capture owner ids must be non-negative")
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+func captureStartedMessage(pid, channel int) string {
+	return fmt.Sprintf("capture started pid=%d channel=%d", pid, channel)
+}
 func inside(base, candidate string) bool {
 	base, _ = filepath.Abs(base)
 	candidate, _ = filepath.Abs(candidate)
@@ -280,8 +303,15 @@ func start(args []string) {
 	must(os.MkdirAll(staging, 0o700))
 	must(validateRawOutputPath(staging, raw))
 	partial := partialCapturePath(raw)
+	uid, gid, err := invokingUserIDs()
+	must(err)
 	capture, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	must(err)
+	if err := setPrivateCaptureOwner(partial, uid, gid); err != nil {
+		_ = capture.Close()
+		_ = os.Remove(partial)
+		must(err)
+	}
 	seconds := strconv.Itoa(duration * 60)
 	cmd := exec.Command("/usr/sbin/tcpdump", "-I", "-i", iface, "-G", seconds, "-W", "1", "-w", "-")
 	cmd.Stdout, cmd.Stderr = capture, os.Stderr
@@ -291,21 +321,22 @@ func start(args []string) {
 		must(err)
 	}
 	_ = capture.Close()
+	tcpdumpPID := cmd.Process.Pid
 	now := time.Now()
-	currentState := state{PID: cmd.Process.Pid, Interface: iface, Channel: channel, RawPath: raw, PartialPath: partial, StartedAt: now, EndsAt: now.Add(time.Duration(duration) * time.Minute)}
+	currentState := state{PID: tcpdumpPID, Interface: iface, Channel: channel, RawPath: raw, PartialPath: partial, StartedAt: now, EndsAt: now.Add(time.Duration(duration) * time.Minute)}
 	if err := saveState(currentState); err != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		_ = os.Remove(partial)
 		must(err)
 	}
-	if err := launchSupervisor(cmd.Process.Pid, partial, raw); err != nil {
+	if err := launchSupervisor(tcpdumpPID, partial, raw); err != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		_ = os.Remove(statePath())
 		_ = os.Remove(partial)
 		must(err)
 	}
 	_ = cmd.Process.Release()
-	fmt.Printf("capture started pid=%d channel=%d\n", cmd.Process.Pid, channel)
+	fmt.Println(captureStartedMessage(tcpdumpPID, channel))
 }
 
 func currentChannel() (int, error) {
